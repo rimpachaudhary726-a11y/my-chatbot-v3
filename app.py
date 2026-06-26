@@ -1,53 +1,64 @@
 #!/usr/bin/env python3
 """
-A simple chatbot script that conducts a multi‑turn conversation using the
-Cerebras chat completion API. The conversation is driven by a predefined list
-of user messages; no interactive input is required.
+A simple multi‑turn chatbot that reads a predefined list of user messages,
+sends each turn to the Cerebras chat completion API, and prints the assistant
+responses. No interactive input is required.
 """
 
+import json
 import os
 import sys
-import json
+import time
+from typing import List, Dict
+
 import requests
 
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
 API_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 MODEL_NAME = "gpt-oss-120b"
+API_KEY_ENV = "CEREBRAS_API_KEY"
 
-
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
 def get_api_key() -> str:
-    """Retrieve the Cerebras API key from the environment."""
-    key = os.environ.get("CEREBRAS_API_KEY")
-    if not key:
-        print("Error: CEREBRAS_API_KEY environment variable not set", file=sys.stderr)
+    """Retrieve the Cerebras API key from environment variables."""
+    api_key = os.getenv(API_KEY_ENV)
+    if not api_key:
+        print(f"Error: environment variable '{API_KEY_ENV}' is not set.", file=sys.stderr)
         sys.exit(1)
-    return key
+    return api_key
 
 
-def call_cerebras_chat(api_key: str, messages: list) -> str:
+def call_cerebras_chat(api_key: str,
+                       messages: List[Dict[str, str]]) -> str:
     """
-    Send a chat completion request to Cerebras and return the assistant's reply.
+    Send a chat completion request to the Cerebras API.
 
     Parameters
     ----------
     api_key : str
-        Authorization token.
-    messages : list
-        List of message dicts following the OpenAI schema.
+        The bearer token for authentication.
+    messages : list of dict
+        The conversation history, each dict contains 'role' and 'content'.
 
     Returns
     -------
     str
-        The assistant's response content.
+        The assistant's reply content.
 
     Raises
     ------
     SystemExit
-        If the request fails or the response is malformed.
+        If the request fails or the response format is unexpected.
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
@@ -55,63 +66,65 @@ def call_cerebras_chat(api_key: str, messages: list) -> str:
 
     try:
         response = requests.post(API_ENDPOINT, headers=headers, json=payload, timeout=30)
-    except Exception as e:
-        print(f"Network error when contacting Cerebras API: {e}", file=sys.stderr)
+    except requests.RequestException as e:
+        print(f"Network error while contacting Cerebras API: {e}", file=sys.stderr)
         sys.exit(1)
 
     if response.status_code != 200:
-        try:
-            err_detail = response.json()
-        except Exception:
-            err_detail = response.text
-        print(
-            f"API error {response.status_code}: {err_detail}",
-            file=sys.stderr,
-        )
+        print(f"API returned non‑200 status code {response.status_code}: {response.text}",
+              file=sys.stderr)
         sys.exit(1)
 
     try:
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
-        print(f"Malformed API response: {e}", file=sys.stderr)
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse JSON response: {e}\nResponse text: {response.text}",
+              file=sys.stderr)
         sys.exit(1)
 
-    return content
+    # Expected shape: {"choices": [{"message": {"role": "...", "content": "..."}}, ...]}
+    try:
+        assistant_message = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        print(f"Unexpected response format: {e}\nFull response: {json.dumps(data, indent=2)}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    return assistant_message.strip()
 
 
-def main():
+def main() -> None:
     api_key = get_api_key()
 
-    # Initial system prompt to set the assistant's behavior (optional)
-    conversation = [
-        {
-            "role": "system",
-            "content": "You are a helpful AI assistant. Keep responses concise.",
-        }
+    # Initial system prompt (optional but good practice)
+    conversation: List[Dict[str, str]] = [
+        {"role": "system", "content": "You are a helpful, concise assistant."}
     ]
 
-    # Pre‑defined user messages for the multi‑turn dialogue
+    # Predefined user messages for the multi‑turn conversation
     user_messages = [
-        "Hello! Who are you?",
+        "Hello! How are you today?",
         "Can you tell me a short joke?",
-        "Thanks! What's the weather like today in Paris?",
+        "What is the capital city of France?",
+        "Explain the concept of recursion in programming in two sentences."
     ]
 
-    for idx, user_text in enumerate(user_messages, start=1):
-        # Append the user's message to the conversation history
-        conversation.append({"role": "user", "content": user_text})
+    for user_input in user_messages:
+        # Append the user's message to the history
+        conversation.append({"role": "user", "content": user_input})
 
-        # Call the API to get the assistant's reply
+        # Call the API and get assistant's response
         assistant_reply = call_cerebras_chat(api_key, conversation)
 
-        # Append the assistant's reply to maintain context for subsequent turns
+        # Append the assistant's reply to preserve context for next turn
         conversation.append({"role": "assistant", "content": assistant_reply})
 
         # Output the turn
-        print(f"Turn {idx} - User: {user_text}")
-        print(f"Turn {idx} - Assistant: {assistant_reply}")
-        print("-" * 40)
+        print(f"User: {user_input}")
+        print(f"Assistant: {assistant_reply}\n")
+
+        # Optional: small pause to be polite to the API (remove if speed is critical)
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
